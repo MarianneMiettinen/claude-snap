@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1b1916">
+<title>Claude Snap</title>
+<style>
+  :root {
+    --bg: #1b1916; --card: #262320; --line: #3a3530; --text: #f3eee8; --muted: #a39a90;
+    --accent: #d97757; --accent-press: #c2633f; --ok: #6fbf73; --bad: #e0685f;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 440px; margin: 0 auto; padding: 20px 16px calc(24px + env(safe-area-inset-bottom)); min-height: 100vh; display: flex; flex-direction: column; }
+  h1 { font-size: 13px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); margin: 4px 0 18px; font-weight: 600; }
+  .status { display: flex; align-items: center; gap: 8px; font-size: 15px; margin-bottom: 28px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); }
+  button { font: inherit; color: inherit; border: 0; cursor: pointer; }
+  .big { display: block; width: 100%; padding: 26px 16px; margin-bottom: 14px; border-radius: 18px; background: var(--card); border: 1px solid var(--line); font-size: 19px; font-weight: 600; }
+  .big:active { background: var(--line); }
+  .primary { display: block; width: 100%; padding: 20px; border-radius: 16px; background: var(--accent); color: #fff; font-size: 18px; font-weight: 700; letter-spacing: .04em; }
+  .primary:active { background: var(--accent-press); }
+  .primary:disabled { opacity: .45; }
+  .link { background: none; color: var(--accent); padding: 12px 0; font-size: 15px; text-align: left; }
+  .label { font-size: 12px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); margin: 18px 0 6px; }
+  .dest { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; }
+  .dest b { display: block; font-size: 17px; }
+  .dest small, .muted { color: var(--muted); font-size: 13px; word-break: break-all; }
+  .preview { width: 100%; max-height: 42vh; object-fit: contain; border-radius: 14px; background: #000; margin: 6px 0 4px; }
+  .back { align-self: flex-start; background: none; font-size: 26px; padding: 0 8px 8px 0; color: var(--muted); }
+  .bar { height: 8px; background: var(--card); border-radius: 4px; overflow: hidden; margin: 20px 0 8px; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .15s; }
+  .done-mark { font-size: 54px; color: var(--ok); margin: 30px 0 4px; }
+  .done h2 { margin: 0 0 20px; letter-spacing: .06em; }
+  .code { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; font: 14px ui-monospace, Consolas, monospace; word-break: break-all; }
+  .note { background: #2d2721; border-left: 3px solid var(--accent); padding: 12px 14px; border-radius: 8px; font-size: 14px; margin: 16px 0; }
+  .err { color: var(--bad); font-weight: 600; font-size: 18px; margin: 30px 0 6px; }
+  .spacer { flex: 1; min-height: 16px; }
+  .sheet { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex; align-items: flex-end; z-index: 5; }
+  .sheet-body { background: var(--bg); width: 100%; max-width: 440px; margin: 0 auto; border-radius: 20px 20px 0 0; padding: 18px 16px calc(18px + env(safe-area-inset-bottom)); max-height: 80vh; overflow-y: auto; }
+  .opt { display: flex; gap: 12px; width: 100%; text-align: left; padding: 14px 12px; border-radius: 12px; background: none; align-items: flex-start; }
+  .opt:active, .opt.sel { background: var(--card); }
+  .radio { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--muted); flex: none; margin-top: 3px; }
+  .opt.sel .radio { border-color: var(--accent); background: radial-gradient(var(--accent) 45%, transparent 50%); }
+  .opt[disabled] { opacity: .4; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main id="app"></main>
+<input id="camera" type="file" accept="image/*" capture="environment" hidden>
+<input id="gallery" type="file" accept="image/*" hidden>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const app = $('#app');
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+  del(k) { try { localStorage.removeItem(k); } catch {} },
+};
+
+let token = store.get('snap.token');
+let pc = store.get('snap.pc') || 'your PC';
+let projects = [];
+let selectedId = null;     // chosen destination
+let autoPicked = false;    // true when selectedId came from "latest active"
+let file = null, previewUrl = null;
+
+function ago(ms) {
+  if (!ms) return '';
+  const s = Math.round((Date.now() - ms) / 1000);
+  if (s < 60) return 'Active just now';
+  if (s < 3600) return `Active ${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `Active ${Math.round(s / 3600)} h ago`;
+  if (s < 172800) return 'Active yesterday';
+  return `Active ${Math.round(s / 86400)} days ago`;
+}
+const selected = () => projects.find((p) => p.id === selectedId);
+const destPath = (p) => p.subfolder ? `${p.folder}\\${p.subfolder}` : p.folder;
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, { ...opts, headers: { ...(opts.headers || {}), Authorization: `Bearer ${token}` } });
+  const body = await res.json().catch(() => ({}));
+  if (res.status === 401 && path !== '/api/pair') { store.del('snap.token'); token = null; }
+  if (!res.ok) throw Object.assign(new Error(body.error || 'Request failed'), { status: res.status });
+  return body;
+}
+
+// ---------- pairing ----------
+async function pairFromHash() {
+  const m = /pair=(\w+)/.exec(location.hash);
+  if (!m) return;
+  history.replaceState(null, '', location.pathname);
+  const ua = navigator.userAgent;
+  const deviceName = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android phone' : 'Phone';
+  try {
+    const r = await fetch('/api/pair', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: m[1], deviceName }) });
+    const b = await r.json();
+    if (!r.ok) throw new Error(b.error);
+    token = b.token; pc = b.pc;
+    store.set('snap.token', token); store.set('snap.pc', pc);
+  } catch (e) { return renderUnpaired(e.message || 'Pairing failed.'); }
+}
+
+function renderUnpaired(msg) {
+  app.innerHTML = `
+    <h1>Claude Snap</h1>
+    ${msg ? `<p class="err">${esc(msg)}</p>` : ''}
+    <p style="font-size:19px;margin-top:${msg ? 0 : 30}px"><b>Pair this phone with your PC</b></p>
+    <p class="muted" style="font-size:15px">On your PC, open <b>http://localhost:5195</b> and scan the QR code with this phone's camera.</p>`;
+}
+
+// ---------- home ----------
+async function refresh() {
+  const s = await api('/api/status');
+  pc = s.pc; store.set('snap.pc', pc);
+  projects = s.projects;
+  const saved = store.get('snap.project');
+  if (selectedId && !projects.some((p) => p.id === selectedId && p.available)) selectedId = null;
+  if (!selectedId || autoPicked) {
+    // Default: the latest active Claude Code project. If that's uncertain, fall back to
+    // the last project used from this phone; otherwise ask.
+    if (s.latestId) { selectedId = s.latestId; autoPicked = true; }
+    else if (saved && projects.some((p) => p.id === saved && p.available)) { selectedId = saved; autoPicked = false; }
+    else { selectedId = null; autoPicked = false; }
+  }
+}
+
+function destBlock() {
+  const p = selected();
+  if (!p) return `
+    <div class="label">Send to</div>
+    <div class="dest"><b>Choose a project</b><small>Couldn't tell which Claude Code project is active.</small></div>`;
+  return `
+    <div class="label">Send to${autoPicked ? ' · latest Claude Code project' : ''}</div>
+    <div class="dest"><b>${esc(p.name)}</b><small>${esc(destPath(p))}</small>
+      ${p.activeAt ? `<br><small>${p.running ? '● ' : ''}${ago(p.activeAt)}</small>` : ''}</div>`;
+}
+
+async function renderHome() {
+  app.innerHTML = `<h1>Send to Claude Code</h1><div class="status"><span class="dot"></span>Connecting to ${esc(pc)}…</div>`;
+  try { await refresh(); }
+  catch (e) {
+    if (!token) return renderUnpaired(e.message);
+    app.innerHTML = `
+      <h1>Send to Claude Code</h1>
+      <div class="status"><span class="dot bad"></span>Not connected</div>
+      <p class="err">Computer not found</p>
+      <p class="muted" style="font-size:15px">Make sure the Claude Snap bridge is running on ${esc(pc)} and this phone is on the same Wi-Fi.</p>
+      <div class="spacer"></div><button class="primary" id="retry">Try again</button>`;
+    $('#retry').onclick = renderHome;
+    return;
+  }
+  app.innerHTML = `
+    <h1>Send to Claude Code</h1>
+    <div class="status"><span class="dot ok"></span>Connected to ${esc(pc)}</div>
+    <button class="big" id="take">📷&nbsp; Take photo</button>
+    <button class="big" id="pick">🖼&nbsp; Choose from gallery</button>
+    ${destBlock()}
+    <button class="link" id="change">Change project</button>`;
+  $('#take').onclick = () => $('#camera').click();
+  $('#pick').onclick = () => $('#gallery').click();
+  $('#change').onclick = () => openPicker(renderHome);
+}
+
+// ---------- picker ----------
+function openPicker(after) {
+  const el = document.createElement('div');
+  el.className = 'sheet';
+  el.innerHTML = `<div class="sheet-body">
+    <div class="label" style="margin-top:0">Send to</div>
+    ${projects.map((p) => `
+      <button class="opt ${p.id === selectedId ? 'sel' : ''}" data-id="${p.id}" ${p.available ? '' : 'disabled'}>
+        <span class="radio"></span>
+        <span><b>${esc(p.name)}</b><br><small class="muted">${esc(destPath(p))}</small>
+        ${p.activeAt ? `<br><small class="muted">${p.running ? '● ' : ''}${ago(p.activeAt)}</small>` : ''}
+        ${p.available ? '' : '<br><small class="muted">Folder not found</small>'}</span>
+      </button>`).join('')}
+    <p class="muted" style="margin:14px 12px 0">Add other projects on your PC at localhost:5195.</p>
+  </div>`;
+  el.onclick = (e) => {
+    const opt = e.target.closest('.opt');
+    if (opt) { selectedId = opt.dataset.id; autoPicked = false; store.set('snap.project', selectedId); }
+    if (opt || e.target === el) { el.remove(); after(); }
+  };
+  document.body.appendChild(el);
+}
+
+// ---------- preview + send ----------
+function onFile(e) {
+  const f = e.target.files[0];
+  e.target.value = '';
+  if (!f) return;
+  file = f;
+  if (previewUrl) URL.revokeObjectURL(previewUrl);
+  previewUrl = URL.createObjectURL(f);
+  renderPreview();
+}
+$('#camera').onchange = onFile;
+$('#gallery').onchange = onFile;
+
+function renderPreview() {
+  app.innerHTML = `
+    <button class="back" id="back" aria-label="Back">←</button>
+    <img class="preview" src="${previewUrl}" alt="Selected image">
+    ${destBlock()}
+    <div class="spacer"></div>
+    <button class="primary" id="send" ${selected() ? '' : 'disabled'}>SEND IMAGE</button>
+    <button class="link" id="change">Change project</button>
+    <button class="link" id="again" style="padding-top:0">Retake / choose another</button>`;
+  $('#back').onclick = renderHome;
+  $('#send').onclick = send;
+  $('#change').onclick = () => openPicker(renderPreview);
+  $('#again').onclick = renderHome;
+}
+
+function send() {
+  const p = selected();
+  app.innerHTML = `
+    <img class="preview" src="${previewUrl}" alt="">
+    <p style="margin-top:18px"><b>Sending to ${esc(p.name)}…</b></p>
+    <div class="bar"><i id="prog"></i></div><p class="muted" id="pct">0%</p>`;
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', `/api/upload?project=${encodeURIComponent(p.id)}`);
+  xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+  xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+  xhr.upload.onprogress = (e) => {
+    if (!e.lengthComputable) return;
+    const pct = Math.round((e.loaded / e.total) * 100);
+    $('#prog').style.width = pct + '%'; $('#pct').textContent = pct < 100 ? pct + '%' : 'Saving on PC…';
+  };
+  xhr.onload = () => {
+    let b = {}; try { b = JSON.parse(xhr.responseText); } catch {}
+    if (xhr.status === 200) return renderDone(b);
+    if (xhr.status === 401) { store.del('snap.token'); token = null; return renderUnpaired(b.error); }
+    if (xhr.status === 404) { selectedId = null; return renderError('Project not available', 'Choose another project.', true); }
+    renderError("Couldn't send image.", b.error || '');
+  };
+  xhr.onerror = () => renderError("Couldn't send image.", `${pc} didn't answer. Is the bridge running?`);
+  xhr.send(file);
+}
+
+function renderError(title, detail, pickProject) {
+  app.innerHTML = `
+    <p class="err">${esc(title)}</p><p class="muted" style="font-size:15px">${esc(detail)}</p>
+    <div class="spacer"></div>
+    <button class="primary" id="retry">${pickProject ? 'Choose project' : 'Retry'}</button>
+    <button class="link" id="home">Back</button>`;
+  $('#retry').onclick = pickProject ? () => openPicker(renderPreview) : send;
+  $('#home').onclick = renderHome;
+}
+
+function renderDone(r) {
+  app.innerHTML = `<div class="done">
+    <div class="done-mark">✓</div>
+    <h2>IMAGE SENT</h2>
+    <div class="label">${esc(r.project)} · saved to</div>
+    <div class="code">${esc(r.rel)}</div>
+    <p class="muted">${esc(r.file)}</p>
+    ${r.copied
+      ? `<div class="note">Claude prompt copied to ${esc(pc)}'s clipboard — just paste it into Claude Code.</div>`
+      : `<div class="note">Couldn't copy the prompt on the PC. Use "Copy Claude prompt" on the PC page.</div>`}
+    ${r.heic ? `<div class="note">This is a HEIC photo. Claude Code can't read HEIC — send a screenshot or a JPEG instead.</div>` : ''}
+  </div>
+  <div class="spacer"></div>
+  <button class="primary" id="another">Send another</button>`;
+  $('#another').onclick = renderHome;
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && token && $('#take')) renderHome();
+});
+
+async function start() {
+  await pairFromHash();
+  if (!token) { if (!app.innerHTML) renderUnpaired(); return; }
+  renderHome();
+}
+// Scanning a new QR code while this page is already open only changes the hash.
+window.addEventListener('hashchange', () => { if (/pair=/.test(location.hash)) { app.innerHTML = ''; start(); } });
+start();
+</script>
+</body>
+</html>

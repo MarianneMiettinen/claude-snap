@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Snap Bridge</title>
+<style>
+  :root { --bg: #f6f3ef; --card: #fff; --line: #e4ddd4; --text: #2a2622; --muted: #7d746a; --accent: #c2633f; --ok: #3d9a45; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #1b1916; --card: #262320; --line: #3a3530; --text: #f3eee8; --muted: #a39a90; --accent: #d97757; --ok: #6fbf73; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, "Segoe UI", sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 28px 16px 60px; }
+  h1 { font-size: 20px; margin: 0 0 4px; } h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); margin: 0 0 12px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 20px; }
+  @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px; }
+  .wide { grid-column: 1 / -1; }
+  .muted { color: var(--muted); font-size: 13px; word-break: break-all; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); margin-right: 6px; }
+  .dot.ok { background: var(--ok); }
+  button { font: inherit; padding: 9px 14px; border-radius: 9px; border: 1px solid var(--line); background: var(--bg); color: var(--text); cursor: pointer; }
+  button.main { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button.x { padding: 3px 9px; font-size: 13px; }
+  #qr svg { width: 220px; height: 220px; background: #fff; border-radius: 10px; display: block; margin: 8px 0; }
+  .row { display: flex; justify-content: space-between; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); align-items: center; }
+  .row:first-of-type { border-top: 0; }
+  input { font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--text); width: 100%; margin: 4px 0 10px; }
+  label { font-size: 13px; color: var(--muted); }
+  .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px; opacity: 0; transition: opacity .2s; }
+  .toast.show { opacity: 1; }
+  code { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Claude Snap Bridge</h1>
+  <div class="muted" id="pc"></div>
+  <div class="grid">
+    <section class="card">
+      <h2>Phone</h2>
+      <div id="devices"></div>
+      <div id="qr"></div>
+      <button class="main" id="pair">Pair a phone</button>
+    </section>
+    <section class="card">
+      <h2>Latest image</h2>
+      <div id="recent"><p class="muted">Nothing received yet.</p></div>
+    </section>
+    <section class="card wide">
+      <h2>Projects <span style="text-transform:none;letter-spacing:0">— newest Claude Code activity first</span></h2>
+      <div id="projects"></div>
+    </section>
+    <section class="card">
+      <h2>Add a project</h2>
+      <form id="add">
+        <label>Project folder</label><input name="folder" placeholder="C:\Projects\grocery-app" required>
+        <label>Name (optional)</label><input name="name" placeholder="Grocery App">
+        <label>Image subfolder</label><input name="subfolder" placeholder="incoming">
+        <button class="main">Save project</button>
+      </form>
+    </section>
+    <section class="card">
+      <h2>Settings</h2>
+      <form id="settings">
+        <label>Default image folder (inside each project)</label><input name="defaultSubfolder">
+        <button>Save</button>
+      </form>
+    </section>
+  </div>
+</main>
+<div class="toast" id="toast"></div>
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const post = (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) }).then(async (r) => { const b = await r.json(); if (!r.ok) throw new Error(b.error); return b; });
+function toast(t) { const el = $('#toast'); el.textContent = t; el.classList.add('show'); setTimeout(() => el.classList.remove('show'), 2200); }
+function ago(ms) {
+  if (!ms) return 'no recent activity';
+  const s = Math.round((Date.now() - ms) / 1000);
+  return s < 60 ? 'just now' : s < 3600 ? `${Math.round(s / 60)} min ago` : s < 86400 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`;
+}
+let settingsFilled = false, deviceCount = null;
+
+async function load() {
+  const s = await (await fetch('/api/desk/state')).json();
+  $('#pc').textContent = s.pc;
+  if (!settingsFilled) { $('#settings').defaultSubfolder.value = s.defaultSubfolder; settingsFilled = true; }
+  if (deviceCount !== null && s.devices.length > deviceCount) { $('#qr').innerHTML = ''; toast('Phone paired'); }
+  deviceCount = s.devices.length;
+
+  $('#devices').innerHTML = s.devices.length ? s.devices.map((d) => `
+    <div class="row"><span><span class="dot ${Date.now() - d.lastSeen < 5 * 60e3 ? 'ok' : ''}"></span>${esc(d.name)}
+      <span class="muted"> · seen ${ago(d.lastSeen)}</span></span>
+      <button class="x" data-unpair="${esc(d.name)}">Unpair</button></div>`).join('')
+    : '<p class="muted">No phone paired yet.</p>';
+
+  const r = s.recent[0];
+  $('#recent').innerHTML = r ? `
+    <p><b>✓ ${esc(r.rel)}</b><br><span class="muted">${esc(r.project)} · ${ago(r.at)}</span></p>
+    <p class="muted">${esc(r.file)}</p>
+    <button class="main" id="copy">Copy Claude prompt</button>
+    <button data-open="${r.projectId}">Open folder</button>`
+    : '<p class="muted">Nothing received yet.</p>';
+
+  $('#projects').innerHTML = s.projects.map((p, i) => `
+    <div class="row"><span><b>${esc(p.name)}</b>${i === 0 && p.certain && p.activeAt ? ' <span class="muted">· latest</span>' : ''}
+      ${p.running ? '<span class="muted"> · <span class="dot ok"></span>session open</span>' : ''}
+      ${p.certain ? '' : '<span class="muted"> · workspace root, no clear subfolder</span>'}
+      <br><span class="muted">${esc(p.folder)}${p.subfolder ? '\\' + esc(p.subfolder) : ''} · ${p.available ? ago(p.activeAt) : 'folder missing'}</span></span>
+      <span style="white-space:nowrap">${p.available ? `<button class="x" data-open="${p.id}">Open</button>` : ''}
+      ${p.source === 'saved' ? `<button class="x" data-remove="${p.id}">Remove</button>` : ''}</span></div>`).join('');
+}
+
+document.addEventListener('click', async (e) => {
+  const t = e.target;
+  try {
+    if (t.id === 'pair') {
+      const r = await post('/api/desk/pair');
+      $('#qr').innerHTML = `${r.svg}<p class="muted">Scan with your phone's camera. Code works once, for 10 minutes.<br><code>${esc(r.link.split('#')[0])}</code></p>`;
+    } else if (t.id === 'copy') { const r = await post('/api/desk/copy'); toast(r.ok ? 'Prompt copied — paste it into Claude Code' : 'Copy failed'); }
+    else if (t.dataset.open) { await post('/api/desk/open', { id: t.dataset.open }); }
+    else if (t.dataset.remove) { await post('/api/desk/project/remove', { id: t.dataset.remove }); load(); }
+    else if (t.dataset.unpair) { await post('/api/desk/device/remove', { name: t.dataset.unpair }); load(); }
+  } catch (err) { toast(err.message); }
+});
+$('#add').onsubmit = async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  try { await post('/api/desk/project', { folder: f.folder.value.trim(), name: f.elements['name'].value.trim(), subfolder: f.subfolder.value.trim() }); f.reset(); toast('Project saved'); load(); }
+  catch (err) { toast(err.message); }
+};
+$('#settings').onsubmit = async (e) => {
+  e.preventDefault();
+  try { await post('/api/desk/settings', { defaultSubfolder: e.target.defaultSubfolder.value }); toast('Saved'); load(); }
+  catch (err) { toast(err.message); }
+};
+load(); setInterval(load, 4000);
+</script>
+</body>
+</html>

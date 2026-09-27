@@ -1,0 +1,13 @@
+{
+  "name": "claude-snap",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Send images from your phone into a Claude Code project folder over local Wi-Fi",
+  "main": "bridge.js",
+  "scripts": {
+    "start": "node bridge.js --open"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4"
+  }
+}
